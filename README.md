@@ -13,7 +13,7 @@
 示例：
 ```bash
 curl "{HOST}/health"
-'''
+```
 返回示例：
 
 ```json
