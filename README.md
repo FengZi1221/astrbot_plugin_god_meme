@@ -13,14 +13,16 @@
 示例：
 ```bash
 curl "{HOST}/health"
+'''
 返回示例：
 
-json
-复制代码
+```json
 {"ok":true,"template":"template.jpg"}
+```
 Generate Meme
+```
 GET /meme?qq=1234567&name=test
-
+```
 参数：
 
 qq：QQ号（必填，数字）
@@ -33,14 +35,16 @@ image/png
 
 Linux/macOS：
 
-bash
+```bash
 复制代码
 curl -o shen.png "{HOST}/meme?qq=1234567&name=test"
+```
 Windows PowerShell：
 
-powershell
+```powershell
 复制代码
 iwr "{HOST}/meme?qq=1234567&name=test" -OutFile shen.png
+```
 Notes
 图片下载到你运行命令的当前目录。
 
