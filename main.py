@@ -12,7 +12,7 @@ from astrbot.core.star.filter.event_message_type import EventMessageType
 import astrbot.api.message_components as Comp
 
 
-@register("shen_meme", "FengZi", "神图：神 @某人 / 神 QQ号 自动生成图片", "1.0.3")
+@register("shen_meme", "FengZi", "神图：神 @某人 / 神 QQ号 自动生成图片", "1.0.4")
 class ShenMemePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None, **kwargs):
         super().__init__(context)
@@ -44,10 +44,16 @@ class ShenMemePlugin(Star):
 
         group_id = getattr(event.message_obj, "group_id", "") or ""
 
-        target_name = await self._get_qq_nickname(event, target_qq)
+        # ✅ 关键：拿 QQ 昵称 nickname（拿不到才回退为 QQ 号）
+        target_name = await self._get_qq_nickname(event, target_qq, group_id=group_id)
+
+        logger.info(
+            f"[shen_meme] platform={getattr(event, 'get_platform_name', lambda: '')() if hasattr(event,'get_platform_name') else ''} "
+            f"group_id={group_id} target_qq={target_qq} target_name={target_name}"
+        )
 
         try:
-            img_bytes = await self._fetch_meme_bytes(target_qq, target_name, group_id=str(group_id))
+            img_bytes = await self._fetch_meme_bytes(target_qq, target_name)
         except Exception as e:
             logger.exception(e)
             yield event.plain_result(f"生成失败：{e}")
@@ -70,10 +76,13 @@ class ShenMemePlugin(Star):
         """
         try:
             for seg in (event.message_obj.message or []):
-                if seg.__class__.__name__.lower() == "at" and hasattr(seg, "qq"):
-                    qq = str(getattr(seg, "qq"))
-                    if qq.isdigit():
-                        return qq
+                if seg.__class__.__name__.lower() == "at":
+                    # 常见字段：qq / user_id / target
+                    for k in ("qq", "user_id", "target"):
+                        if hasattr(seg, k):
+                            qq = str(getattr(seg, k))
+                            if qq.isdigit():
+                                return qq
         except Exception:
             pass
 
@@ -91,64 +100,83 @@ class ShenMemePlugin(Star):
 
         return None
 
-    async def _get_qq_nickname(self, event: AstrMessageEvent, target_qq: str) -> str:
+    def _get_call_action(self, event: AstrMessageEvent):
         """
-        目标：优先拿 QQ 昵称 nickname（不是群名片 card）
-        顺序：
+        尽量从 event / bot 里找到 OneBot 的 call_action 能力。
+        找不到就返回 None。
+        """
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            return None
+
+        api = getattr(bot, "api", None)
+        if api is not None and hasattr(api, "call_action"):
+            return api.call_action
+
+        # 有些实现直接挂在 bot 上
+        if hasattr(bot, "call_action"):
+            return bot.call_action
+
+        return None
+
+    def _extract_data(self, ret):
+        """
+        兼容各种返回格式：{"data":...} / {"result":...} / 直接就是 data
+        """
+        if not isinstance(ret, dict):
+            return None
+        return ret.get("data") or ret.get("result") or ret.get("response") or ret
+
+    async def _get_qq_nickname(self, event: AstrMessageEvent, target_qq: str, group_id: str = "") -> str:
+        """
+        只要底层能 call_action，就去取：
           1) get_group_member_info -> nickname
           2) get_stranger_info -> nickname
-          3) QQ号兜底
+        都失败才返回 QQ号。
 
-        说明：
-          - NapCat 走 OneBot v11，通常挂在 aiocqhttp 平台
-          - event.get_sender_name() 多半是群显示名/群昵称，不用它
+        ✅ 不再强行判断平台名/事件类型，避免你现在这种“永远兜底”的情况。
         """
-        group_id = getattr(event.message_obj, "group_id", "") or ""
-
-        if (getattr(event, "get_platform_name", None) and event.get_platform_name() != "aiocqhttp"):
+        call_action = self._get_call_action(event)
+        if call_action is None:
             return str(target_qq)
 
-        try:
-            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
-            if not isinstance(event, AiocqhttpMessageEvent):
-                return str(target_qq)
-
-            client = event.bot
-            if group_id:
-                payload = {
-                    "group_id": int(group_id),
-                    "user_id": int(target_qq),
-                    "no_cache": True
-                }
-                ret = await client.api.call_action("get_group_member_info", **payload)
-                data = ret.get("data") if isinstance(ret, dict) else None
+        # 1) 群内优先
+        if group_id:
+            try:
+                ret = await call_action(
+                    "get_group_member_info",
+                    group_id=int(group_id),
+                    user_id=int(target_qq),
+                    no_cache=True,
+                )
+                data = self._extract_data(ret)
                 if isinstance(data, dict):
                     nickname = (data.get("nickname") or "").strip()
                     if nickname:
                         return nickname
+            except Exception as e:
+                logger.warning(f"[shen_meme] get_group_member_info failed: {e}")
 
-            payload = {"user_id": int(target_qq), "no_cache": True}
-            ret = await client.api.call_action("get_stranger_info", **payload)
-            data = ret.get("data") if isinstance(ret, dict) else None
+        # 2) 兜底：陌生人信息
+        try:
+            ret = await call_action(
+                "get_stranger_info",
+                user_id=int(target_qq),
+                no_cache=True,
+            )
+            data = self._extract_data(ret)
             if isinstance(data, dict):
                 nickname = (data.get("nickname") or "").strip()
                 if nickname:
                     return nickname
-
         except Exception as e:
-            logger.warning(f"[shen_meme] get nickname failed: {e}")
+            logger.warning(f"[shen_meme] get_stranger_info failed: {e}")
 
         return str(target_qq)
 
-    async def _fetch_meme_bytes(self, qq: str, name: str, group_id: str = "") -> bytes:
-        """
-        重点：urlencode 用 utf-8 编码，确保 emoji/特殊字符不会乱码
-        """
-        params = {"qq": str(qq), "name": str(name)}
-        if group_id:
-            params["group_id"] = str(group_id)
-
-        qs = urlencode(params, encoding="utf-8")
+    async def _fetch_meme_bytes(self, qq: str, name: str) -> bytes:
+        # ✅ urlencode 用 utf-8，emoji 不会丢
+        qs = urlencode({"qq": str(qq), "name": str(name)}, encoding="utf-8")
         url = f"{self.api_base.rstrip('/')}/meme?{qs}"
 
         loop = asyncio.get_event_loop()
