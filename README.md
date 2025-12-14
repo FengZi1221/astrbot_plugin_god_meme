@@ -1,6 +1,6 @@
 # shen-meme-api (minimal)
 
-一个极简的表情包生成插件）。
+一个极简的表情包生成插件
 
 ## Base URL
 
